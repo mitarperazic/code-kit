@@ -1238,7 +1238,19 @@ export const register: Register = on => {
               void update($, treeOff, () => 0)
               void update($, chgOff, () => 0)
             }}
-            onSubmit={() => {}}
+            onSubmit={(v: string) => {
+              // Enter: an exact name picks that file (or folder); anything else just clears the search.
+              const t = v.trim().toLowerCase()
+              const hit = t ? rows.find(r => !r.isDir && r.name.toLowerCase() === t) ?? rows.find(r => r.isDir && r.name.toLowerCase() === t) : undefined
+              if (hit) {
+                reveal(hit.path, !hit.isDir)
+                if (!hit.isDir) void openFile($, hit.path)
+              } else {
+                void update($, query, () => '')
+                void update($, treeOff, () => 0)
+                void update($, chgOff, () => 0)
+              }
+            }}
           />
           {q && !shown.length ? <Text color={GRAY}>Nema rezultata.</Text> : null}
           {shown.map(r => {
