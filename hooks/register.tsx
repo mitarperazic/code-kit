@@ -778,7 +778,11 @@ export const register: Register = on => {
 
   // /code-kit: bring the panel up (the saved choice from /code-kit:config is not changed).
   on('command.run', { command: 'code-kit' }, async $ => {
-    if (!(await isProject($))) return { text: 'Panel se otvara samo u projektu (nema .git, package.json, pom.xml…).' }
+    if (!(await isProject($))) {
+      return {
+        text: `Panel se ne otvara: ${await rootDir($)} nije projekat. Panel radi samo u folderu projekta, a ovdje nema nijednog od: ${MARKERS.join(', ')}. Pokreni Claude Code u folderu projekta (na primjer u onom sa .git).`,
+      }
+    }
     await openPanels($, true, true)
 
     return { text: 'Panel je uključen.' }
@@ -824,7 +828,11 @@ export const register: Register = on => {
       const inp = ((e as any).tool_input ?? (e as any).input ?? {}) as { file_path?: unknown; notebook_path?: unknown }
       const fp = inp.file_path ?? inp.notebook_path
       const wrote = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'].includes(String((e as any).tool_name ?? (e as any).tool ?? ''))
-      if (typeof fp === 'string' && fp.startsWith('/')) await markEdited($, [fp], true, wrote)
+      // The editor shows only files Claude edits (not ones it merely reads) that belong to the folder Claude was started in.
+      if (typeof fp === 'string' && fp.startsWith('/')) {
+        const inside = fp.startsWith((await rootDir($)) + '/')
+        await markEdited($, [fp], wrote && inside, wrote && inside)
+      }
       // The status line follows what the tool touched: a file or folder inside a repository.
       const touched = fp ?? (inp as { path?: unknown }).path
       if (typeof touched === 'string' && touched.startsWith('/')) {
