@@ -1,0 +1,11 @@
+{
+  "name": "code-kit",
+  "owner": { "name": "mitarperazic" },
+  "plugins": [
+    {
+      "name": "code-kit",
+      "source": "./",
+      "description": "Cjelokupno lično iskustvo: output stil, pravila, skillovi, panel, editor, statusna traka"
+    }
+  ]
+}
