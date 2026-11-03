@@ -378,6 +378,22 @@ async function markEdited($: any, paths: string[], openIt = false, force = false
   }
 }
 
+// The clipboard, read from the system (the editor has no way to ask for it): null when nothing could be read.
+async function readClipboard($: any): Promise<string | null> {
+  const tools = [['pbpaste'], ['wl-paste', '--no-newline'], ['xclip', '-selection', 'clipboard', '-o'], ['powershell', '-NoProfile', '-Command', 'Get-Clipboard -Raw']]
+  for (const argv of tools) {
+    try {
+      const r = await $.process.run(argv)
+      if (r.exitCode === 0) return String(r.stdout)
+    } catch {}
+  }
+
+  return null
+}
+// A paste on its way into the editor (id grows; the editor puts each id in once). Dropped after two seconds.
+let pasteBox: { id: number; text: string } | null = null
+const MAX_PASTE = 20000
+
 // Modification time of the last write the editor itself made, by path.
 const ownWrite = new Map<string, number>()
 // Autosave state: while the editor's text is on its way to disk (or was just typed), the disk copy is older than
@@ -900,6 +916,34 @@ export const register: Register = on => {
         }
       }
     }
+    if (d?.paste === true) {
+      const clip = await readClipboard($)
+      const say = async (msg: string) => {
+        const mine = ++copyToken
+        await update($, copied, () => msg)
+        try {
+          await $.clock.sleep(2000)
+          if (mine === copyToken) await update($, copied, () => '')
+        } catch {}
+      }
+      if (clip === null) void say('Ne mogu da pročitam međuspremnik')
+      else if (!clip) void say('Međuspremnik je prazan')
+      else if (clip.length > MAX_PASTE) void say(`Predugačko za lijepljenje (${clip.length} znakova, najviše ${MAX_PASTE})`)
+      else {
+        const mine = Date.now()
+        pasteBox = { id: mine, text: clip }
+        await update($, tick, n => n + 1)
+        void (async () => {
+          try {
+            await $.clock.sleep(2000)
+            if (pasteBox && pasteBox.id === mine) {
+              pasteBox = null
+              await update($, tick, n => n + 1)
+            }
+          } catch {}
+        })()
+      }
+    }
     if (typeof d?.copy === 'string') {
       await $.ui.copy({ text: d.copy, surface: e.surface })
       // A notice in the editor's header for two seconds; a newer copy keeps it up longer.
@@ -1126,6 +1170,19 @@ export const register: Register = on => {
     barRow = HEAD + height - 1
     editCols2 = Math.max(8, editW - String(known.split('\n').length).length - 4)
     const isBig = text.length > MAX_EDIT
+    // A Client's props may not pass 100000 characters serialized or it unmounts (and the pane goes blank). The text comes
+    // first, then the line marks, the paste and last the committed copy (for the revert button): what does not fit is left out.
+    const PROPS_BUDGET = 90000
+    const shownText = isBig ? text.slice(0, MAX_EDIT) : text
+    let room = PROPS_BUDGET - shownText.length - 1500
+    const marksStr = isBig ? '' : JSON.stringify(gitLines)
+    const marksFit = !isBig && marksStr.length <= room
+    const shownMarks = marksFit ? { ...gitLines } : {}
+    room -= marksFit ? marksStr.length : 0
+    const shownPaste = !isBig && pasteBox && pasteBox.text.length <= room ? pasteBox : null
+    room -= shownPaste ? shownPaste.text.length : 0
+    const baseStr = !isBig && gitBase ? JSON.stringify(gitBase) : ''
+    const shownBase = !isBig && gitBase && baseStr.length <= room ? gitBase : null
     const start = Math.min(off, maxOff)
     const shown = rows.slice(start, start + theight)
     const dirs = rows.filter(r => r.isDir).length
@@ -1143,7 +1200,7 @@ export const register: Register = on => {
             <Client
               key="editor"
               module="./editor.tsx"
-              props={{ path: active, text: isBig ? text.slice(0, MAX_EDIT) : text, wheel: wheelTotal, scrollTo: editTop, hwheel: sidewaysTotal, scrollLeft: editLeft, marks: { ...gitLines }, base: gitBase, readOnly: isBig, rev: revision }}
+              props={{ path: active, text: shownText, wheel: wheelTotal, scrollTo: editTop, hwheel: sidewaysTotal, scrollLeft: editLeft, marks: shownMarks, base: shownBase, paste: shownPaste, readOnly: isBig, rev: revision }}
               width={editW}
               height={height}
             />

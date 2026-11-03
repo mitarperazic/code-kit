@@ -157,6 +157,38 @@ const carry = (marks: Marks, a: string[], b: string[]): Marks => {
   return next
 }
 
+// The text of a paste (Ctrl+V) put at the cursor, replacing a selection if there is one.
+const applyInsert = (s: { lines: string[]; row: number; col: number; anchor: Pos | null }, text: string) => {
+  const lines = s.lines.slice()
+  let row = s.row
+  let col = s.col
+  const r = order(s)
+  if (r) {
+    const head = (lines[r[0].row] ?? '').slice(0, r[0].col)
+    const tail = (lines[r[1].row] ?? '').slice(r[1].col)
+    lines.splice(r[0].row, r[1].row - r[0].row + 1, head + tail)
+    row = r[0].row
+    col = r[0].col
+  }
+  const parts = text.replace(/\r\n?/g, '\n').split('\n')
+  const l = lines[row] ?? ''
+  const tail = l.slice(col)
+  if (parts.length === 1) {
+    lines[row] = l.slice(0, col) + parts[0] + tail
+    col += (parts[0] as string).length
+  } else {
+    lines[row] = l.slice(0, col) + parts[0]
+    lines.splice(row + 1, 0, ...parts.slice(1))
+    row += parts.length - 1
+    col = (parts[parts.length - 1] as string).length
+    lines[row] += tail
+  }
+
+  return { lines, row, col }
+}
+// The newest paste already put in (a paste arrives as a prop and must go in once).
+let lastPasteId = 0
+
 // Puts one changed line back as git has it (HEAD): `base` is the committed text. A line typed over gets its old
 // text (or goes, when it is new); a '-' mark gets the lines that were taken out above it.
 const revertAt = (lines: string[], base: string[], r: number): { lines: string[]; fixed: number[] } | null => {
@@ -218,7 +250,7 @@ type State = {
   undo: Snap[]
   hold?: boolean
 }
-type Props = { path: string; text: string; wheel?: number; scrollTo?: number; hwheel?: number; scrollLeft?: number; marks?: Marks; readOnly?: boolean; rev?: number; base?: string[] | null; focused?: boolean }
+type Props = { path: string; text: string; wheel?: number; scrollTo?: number; hwheel?: number; scrollLeft?: number; marks?: Marks; readOnly?: boolean; rev?: number; base?: string[] | null; focused?: boolean; paste?: { id: number; text: string } | null }
 
 const NAMED = new Set(['up', 'down', 'left', 'right', 'return', 'tab', 'backspace', 'delete', 'pageup', 'pagedown', 'home', 'end', 'space', 'escape'])
 const SEL_BG = '#264f78'
@@ -287,7 +319,7 @@ export default function Editor(props: Props, surface: any) {
   const old: State | null = surface.state && surface.state.path === props.path ? surface.state : null
   // Same file, newer revision: the file changed outside the editor, so take its text
   // and keep the cursor and scroll where they were.
-  const m: State = !old
+  let m: State = !old
     ? { path: (lastActive = 0, props.path), rev, lines: fromDisk, row: 0, col: 0, top: 0, left: 0, wheel: 0, hwheel: 0, marks: props.marks ?? {}, anchor: null, undo: [] }
     : old.rev === rev
       ? old
@@ -302,6 +334,17 @@ export default function Editor(props: Props, surface: any) {
           col: Math.min(old.col, fromDisk[Math.min(old.row, fromDisk.length - 1)].length),
           anchor: null,
         }
+  // A paste from the hooks module (it read the clipboard): in once, at the cursor, as one edit.
+  let pasted = false
+  if (props.paste && !props.readOnly) {
+    if (!old) lastPasteId = Math.max(lastPasteId, props.paste.id)
+    else if (props.paste.id > lastPasteId) {
+      lastPasteId = props.paste.id
+      const res = applyInsert(m, props.paste.text)
+      m = { ...m, lines: res.lines, row: res.row, col: res.col, anchor: null, undo: [...m.undo.slice(-99), { lines: m.lines, row: m.row, col: m.col }], marks: carry(m.marks, m.lines, res.lines) }
+      pasted = true
+    }
+  }
   live = m
 
   const ext = (props.path.split('.').pop() ?? '').toLowerCase()
@@ -328,6 +371,13 @@ export default function Editor(props: Props, surface: any) {
       if (m.col < left) left = m.col
       if (m.col >= left + textW) left = m.col - textW + 1
     }
+  }
+
+  if (pasted) {
+    blinkOn = true
+    stamp()
+    surface.setState(m)
+    surface.post({ path: m.path, text: m.lines.join('\n'), top, left })
   }
 
   const commit = (next: State, changed: boolean) => {
@@ -411,6 +461,9 @@ export default function Editor(props: Props, surface: any) {
         if (!t) return
         surface.post({ copy: t })
         removeSel()
+      } else if (key === 'v') {
+        if (!props.readOnly) surface.post({ paste: true })
+        return
       } else if (key === 'z') {
         const prev = undo[undo.length - 1]
         if (!prev || props.readOnly) return
@@ -424,6 +477,7 @@ export default function Editor(props: Props, surface: any) {
         return
       } else return
     } else if (k.meta) {
+      if (key === 'v' && !props.readOnly) surface.post({ paste: true })
       return
     } else if (key === 'left') {
       move(() => {
