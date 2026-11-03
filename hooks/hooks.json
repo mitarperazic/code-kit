@@ -1,0 +1,8 @@
+{
+  "modules": ["./register.tsx"],
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "printf '<profile-rules>\\n'; cat \"${CLAUDE_PLUGIN_ROOT}/rules/profile.md\"; printf '\\n</profile-rules>\\n<design-rules>\\n'; cat \"${CLAUDE_PLUGIN_ROOT}/rules/design-rules.md\"; printf '\\n</design-rules>\\n'" } ] }
+    ]
+  }
+}
