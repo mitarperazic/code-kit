@@ -15,6 +15,8 @@ declare module 'claude-code' {
       editCols: Shaped<number>
       copied: Shaped<string>
       stick: Shaped<number>
+      query: Shaped<string>
+      chgOff: Shaped<number>
     }
   }
 }

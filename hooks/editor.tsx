@@ -173,7 +173,13 @@ const revertAt = (lines: string[], base: string[], r: number): { lines: string[]
     const bn = e < lines.length - 1 ? (back[e + 1] as number) : base.length
     const region = base.slice(bp + 1, bn)
     const off = r - s
-    if (off < region.length) { next[r] = region[off] as string; return { lines: next, fixed: [r] } }
+    if (off < region.length) {
+      next[r] = region[off] as string
+      // The last line of a block that lost more lines than it kept brings back the rest, which have no button of their own.
+      const extra = r === e ? region.slice(e - s + 1) : []
+      if (extra.length) next.splice(r + 1, 0, ...extra)
+      return { lines: next, fixed: [r, ...extra.map((_, i) => r + 1 + i)] }
+    }
     next.splice(r, 1)
     if (!next.length) next.push('')
     return { lines: next, fixed: [] }
@@ -182,7 +188,14 @@ const revertAt = (lines: string[], base: string[], r: number): { lines: string[]
   while (p >= 0 && back[p] === -1) p--
   const bp = p >= 0 ? (back[p] as number) : -1
   const region = base.slice(bp + 1, back[r])
-  if (!region.length) return null
+  if (!region.length) {
+    // Lines taken out at the very end of the file: the mark sits on the last line, the lines go back below it.
+    const tail = r === lines.length - 1 ? base.slice((back[r] as number) + 1) : []
+    if (!tail.length) return null
+    next.push(...tail)
+
+    return { lines: next, fixed: tail.map((_, i) => r + 1 + i) }
+  }
   next.splice(r, 0, ...region)
 
   return { lines: next, fixed: region.map((_, i) => r + i) }

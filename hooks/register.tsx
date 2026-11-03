@@ -48,6 +48,9 @@ async function focusOn($: any, dir: string, mustBeRepo: boolean) {
 
 const CHANGES = 'project-changes'
 const tick = atom({ plugin: 'code-kit', key: 'tick' } as const, 0, { shape: 'tick-1' })
+// What the search field holds: the tree shows only the files and folders whose name contains it.
+const query = atom({ plugin: 'code-kit', key: 'query' } as const, '', { shape: 'query-1' })
+const chgOff = atom({ plugin: 'code-kit', key: 'chgOff' } as const, 0, { shape: 'chgoff-1' })
 const treeOff = atom({ plugin: 'code-kit', key: 'treeOff' } as const, 0, { shape: 'off-1' })
 const wheel = atom({ plugin: 'code-kit', key: 'wheel' } as const, 0, { shape: 'wheel-1' })
 const hwheel = atom({ plugin: 'code-kit', key: 'hwheel' } as const, 0, { shape: 'hwheel-1' })
@@ -74,7 +77,35 @@ const isProject = async ($: any): Promise<boolean> => {
   return false
 }
 
-const openPanels = async ($: any, focus = false) => {
+// What the person turned on with /code-kit:config, kept in ~/.claude/code-kit.json (absent = everything on):
+// panel = the structure and editor pane, stats = the status line under the prompt.
+let cfg = { panel: true, stats: true }
+let cfgRaw = ''
+async function loadConfig($: any): Promise<boolean> {
+  let raw = ''
+  try {
+    raw = await $.fs.read((await homeSettings($)).replace(/settings\.json$/, 'code-kit.json'))
+  } catch {}
+  if (raw === cfgRaw) return false
+  cfgRaw = raw
+  let j: any = {}
+  try {
+    j = JSON.parse(raw || '{}')
+  } catch {}
+  const next = { panel: j.panel !== false, stats: j.stats !== false }
+  const changed = next.panel !== cfg.panel || next.stats !== cfg.stats
+  cfg = next
+
+  return changed
+}
+
+// force: the person asked for the panel (/code-kit), so the saved choice does not hold it back.
+const openPanels = async ($: any, focus = false, force = false) => {
+  if (!force && !cfg.panel) {
+    void $.ui.close({ id: PANE })
+    void $.ui.close({ id: CHANGES })
+    return
+  }
   if (!(await isProject($))) {
     void $.ui.close({ id: PANE })
     void $.ui.close({ id: CHANGES })
@@ -151,11 +182,25 @@ let shiftHeld = false
 // The walked tree, kept until the tree, the open folders or the project change.
 let treeKey = ''
 let treeRows: Row[] = []
+// How many rows the tree shows right now (filtered or not): what the wheel clamps by.
+let wheelRows = 0
+// The changed-files list under the tree: its first row in the pane body, its height and how many rows it holds.
+let chgFrom = -1
+let chgHeight = 0
+let chgCount = 0
+// Every file and folder of the project, for the search (rebuilt when a file changes).
+const MAX_INDEX = 20000
+let indexRows: Row[] = []
+let indexKey = ''
 // Rows the tree window shows and the editor's width, as last drawn: what the wheel clamps by.
 let treeHeight = 20
 
 // Git state of the project (absolute paths): new files, changed files and the folders holding them.
 let gitNew = new Set<string>()
+// Deleted files (they no longer exist on disk, so the tree cannot show them) and +/- line counts per changed file.
+let gitDel = new Set<string>()
+let gitStat = new Map<string, [number, number]>()
+let gitStatKey = ''
 let gitMod = new Set<string>()
 let gitNewDirs = new Set<string>()
 let gitModDirs = new Set<string>()
@@ -222,6 +267,7 @@ async function loadGit($: any, root: string): Promise<boolean> {
     if (st.exitCode !== 0) return false
     const nn = new Set<string>()
     const mm = new Set<string>()
+    const dd = new Set<string>()
     const parts = st.stdout.split('\0')
     for (let i = 0; i < parts.length; i++) {
       const ent = parts[i]
@@ -230,7 +276,10 @@ async function loadGit($: any, root: string): Promise<boolean> {
       const y = ent[1]
       const path = base + '/' + ent.slice(3)
       if (x === 'R' || x === 'C') i++
-      if (x === 'D' || y === 'D') continue
+      if (x === 'D' || y === 'D') {
+        dd.add(path)
+        continue
+      }
       if ((x === '?' && y === '?') || x === 'A') nn.add(path)
       else mm.add(path)
     }
@@ -261,9 +310,23 @@ async function loadGit($: any, root: string): Promise<boolean> {
     }
     gitTrackedDirs = tracked
     const same = (a: Set<string>, b: Set<string>) => a.size === b.size && [...a].every(x => b.has(x))
-    const changed = !same(nn, gitNew) || !same(mm, gitMod)
+    const stat = new Map<string, [number, number]>()
+    try {
+      const ns = await $.process.run(['git', '--no-optional-locks', 'diff', 'HEAD', '--numstat'], { cwd: root })
+      if (ns.exitCode === 0) {
+        for (const l of ns.stdout.split('\n')) {
+          const [a, b, rel] = l.split('\t')
+          if (rel) stat.set(base + '/' + rel, [Number(a) || 0, Number(b) || 0])
+        }
+      }
+    } catch {}
+    const statKey = JSON.stringify([...stat])
+    const changed = !same(nn, gitNew) || !same(mm, gitMod) || !same(dd, gitDel) || statKey !== gitStatKey
     gitNew = nn
     gitMod = mm
+    gitDel = dd
+    gitStat = stat
+    gitStatKey = statKey
     gitNewDirs = dirsOf(nn)
     gitModDirs = dirsOf(mm)
 
@@ -303,12 +366,14 @@ let busy = false
 type Marks = Record<number, '+' | '-' | 'g'>
 
 // Files Claude touched (absolute paths); the tree tints them and their folders.
-async function markEdited($: any, paths: string[], openIt = false) {
+// force: a file just written is shown even when it was marked before (the mark outlives the edit; the editor must not).
+async function markEdited($: any, paths: string[], openIt = false, force = false) {
   const have = new Set(await read($, edited))
   const fresh = paths.filter(p => p && !have.has(p))
   if (fresh.length) await update($, edited, list => [...list, ...fresh.filter(p => !list.includes(p))])
-  if (openIt && fresh.length) {
-    const last = fresh[fresh.length - 1]
+  const shownList = force ? paths.filter(Boolean) : fresh
+  if (openIt && shownList.length) {
+    const last = shownList[shownList.length - 1]
     if ((await read($, file)) !== last) await openFile($, last)
   }
 }
@@ -325,6 +390,16 @@ let turnStart = 0
 // Bring the panel up to date: the open file, then the tree. Quiet (the timer) it redraws
 // only when the open file changed, so an idle panel costs a file read a second.
 async function refresh($: any, quiet = false, byClaude = busy) {
+  if (await loadConfig($)) {
+    if (cfg.panel) await openPanels($)
+    else void $.ui.close({ id: PANE })
+    statusAt = 0
+    await update($, stick, n => n + 1)
+  }
+  if (!cfg.panel) {
+    if (cfg.stats) void updateStatus($)
+    return
+  }
   void updateStatus($)
   await ensureKnown($)
   const gitChanged = await loadGit($, await rootDir($))
@@ -454,6 +529,7 @@ async function updateStatus($: any) {
       statusCleared = true
       $.ui.status(undefined)
     }
+    if (!cfg.stats) return
     const now = await $.clock.now()
     if (now - statusAt < 3000) return
     statusAt = now
@@ -606,6 +682,22 @@ async function onFsChange($: any, root: string, rels: string[]) {
     return
   }
   fsBusy = true
+  // While Claude works, a file changed by a shell command (a script, sed, git) is shown too, as one written by Edit is.
+  if (busy) {
+    try {
+      const cur = await read($, file)
+      const fresh: string[] = []
+      for (const r of rels.slice(0, 50)) {
+        if (r === '.git' || r.startsWith('.git/')) continue
+        const p = root + '/' + r
+        if (p === cur) continue
+        const st = await $.fs.stat(p)
+        if (st.kind !== 'file' || st.size > MAX_EDIT || ownWrite.get(p) === st.mtimeMs) continue
+        fresh.push(p)
+      }
+      if (fresh.length) await markEdited($, fresh.slice(-5), true, true)
+    } catch {}
+  }
   try {
     do {
       fsAgain = false
@@ -652,6 +744,10 @@ async function startWatcher($: any) {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await rootDir($)
+    await loadConfig($)
+    try {
+      await $.command.register({ name: 'code-kit', description: 'Uključi panel (struktura projekta i editor)' })
+    } catch {}
     await openPanels($)
     void startWatcher($)
     // Safety net, once a second: the open file is reread, and during a turn the tree is scanned for changes.
@@ -667,7 +763,7 @@ export const register: Register = on => {
       for (let i = 0; i < 20; i++) {
         await $.clock.sleep(500)
         try {
-          if (!(await isProject($))) return
+          if (!cfg.panel || !(await isProject($))) return
           const p = (await $.ui.panes()) as any
           const list = Array.isArray(p) ? p : p?.panes ?? []
           if (list.some((x: any) => x.id === PANE && x.isPlaced)) return
@@ -677,6 +773,14 @@ export const register: Register = on => {
     })()
 
     return next(e)
+  })
+
+  // /code-kit: bring the panel up (the saved choice from /code-kit:config is not changed).
+  on('command.run', { command: 'code-kit' }, async $ => {
+    if (!(await isProject($))) return { text: 'Panel se otvara samo u projektu (nema .git, package.json, pom.xml…).' }
+    await openPanels($, true, true)
+
+    return { text: 'Panel je uključen.' }
   })
 
   // The panel is fixed: the person's close mark or key is refused. The plugin's own close (not a project) goes through.
@@ -718,7 +822,8 @@ export const register: Register = on => {
     try {
       const inp = ((e as any).tool_input ?? (e as any).input ?? {}) as { file_path?: unknown; notebook_path?: unknown }
       const fp = inp.file_path ?? inp.notebook_path
-      if (typeof fp === 'string' && fp.startsWith('/')) await markEdited($, [fp], true)
+      const wrote = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'].includes(String((e as any).tool_name ?? (e as any).tool ?? ''))
+      if (typeof fp === 'string' && fp.startsWith('/')) await markEdited($, [fp], true, wrote)
       // The status line follows what the tool touched: a file or folder inside a repository.
       const touched = fp ?? (inp as { path?: unknown }).path
       if (typeof touched === 'string' && touched.startsWith('/')) {
@@ -829,18 +934,26 @@ export const register: Register = on => {
 
       return {}
     }
+    // Over the changed-files list the wheel moves that list on its own.
+    if (e.pointer && chgFrom >= 0 && e.pointer.row >= chgFrom) {
+      const cmax = Math.max(0, chgCount - chgHeight)
+      await update($, chgOff, n => Math.max(0, Math.min(cmax, Math.min(n, cmax) + e.by)))
+
+      return {}
+    }
     // Live numbers from the last draw first (the atom is only a fallback after a reload), and the
     // offset is clamped before the move, so a stale offset past the end leaves no dead zone.
-    const max = treeRows.length ? Math.max(0, treeRows.length - treeHeight) : await read($, treeMax)
+    const max = wheelRows ? Math.max(0, wheelRows - treeHeight) : await read($, treeMax)
     await update($, treeOff, n => Math.max(0, Math.min(max, Math.min(n, max) + e.by)))
 
     return {}
   })
 
   // The status line: drawn in the hint line under the prompt, with Text colours like the one in settings.json.
-  on('ui.render', { component: 'PromptHint' }, async ($, e) => {
+  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     const { Box, Text } = $.ui.resolve(e)
     await read($, stick)
+    if (!cfg.stats) return next(e)
     if (!statusSegs.length) void updateStatus($)
 
     // Too long for the row: the project name and the branch give way, ending in an ellipsis, so nothing else is cut.
@@ -870,8 +983,10 @@ export const register: Register = on => {
 
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button, Client } = $.ui.resolve(e)
+    const { Box, Text, Button, Client, Input } = $.ui.resolve(e)
     await read($, tick)
+    const rawQuery = await read($, query)
+    const q = rawQuery.trim().toLowerCase()
     const root = await rootDir($)
     const expanded = new Set(await read($, open))
     const active = await read($, file)
@@ -900,7 +1015,35 @@ export const register: Register = on => {
         if (isDir && expanded.has(p)) await walk(p, depth + 1)
       }
     }
-    if (key === treeKey) rows.push(...treeRows)
+    if (q) {
+      // Search: every folder is read (cached until a file changes), then only the matches and the folders leading to them stay.
+      const ikey = root + '\0' + (await read($, tick))
+      if (ikey !== indexKey) {
+        const all: Row[] = []
+        const crawl = async (dir: string, depth: number) => {
+          let entries
+          try {
+            entries = await $.fs.list(dir)
+          } catch {
+            return
+          }
+          entries.sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'dir' ? -1 : 1))
+          for (const it of entries) {
+            if (all.length >= MAX_INDEX) return
+            if (SKIP.has(it.name)) continue
+            const p = `${dir}/${it.name}`
+            const isDir = it.kind === 'dir'
+            all.push({ path: p, name: it.name, depth, isDir })
+            if (isDir) await crawl(p, depth + 1)
+          }
+        }
+        await crawl(root, 0)
+        indexRows = all
+        indexKey = ikey
+      }
+      // A flat list: only what matches, each by its own name, no path and no indent.
+      for (const r of indexRows) if (r.name.toLowerCase().includes(q)) rows.push({ ...r, depth: 0 })
+    } else if (key === treeKey) rows.push(...treeRows)
     else {
       await walk(root, 0)
       treeKey = key
@@ -909,6 +1052,18 @@ export const register: Register = on => {
 
     const toggle = (p: string) =>
       update($, open, list => (list.includes(p) ? list.filter(x => x !== p) : [...list, p]))
+    // Something picked from the search results (folder or file): the search clears and the tree opens up to it.
+    const reveal = (p: string, isFile = false) => {
+      const chain: string[] = isFile ? [] : [p]
+      let d = p.slice(0, p.lastIndexOf('/'))
+      while (d.length > root.length) {
+        chain.push(d)
+        d = d.slice(0, d.lastIndexOf('/'))
+      }
+      void update($, open, list => [...list, ...chain.filter(x => !list.includes(x))])
+      void update($, query, () => '')
+      void update($, treeOff, () => 0)
+    }
     // Everything fits the window the engine gave the body, so nothing scrolls the pane.
     const H = Math.max(8, e.props.scroll?.bodyRows ?? (e.viewport?.rows ?? 30) - 8)
     const HEAD = 3
@@ -944,8 +1099,24 @@ export const register: Register = on => {
 
       return i > 0 ? [n.slice(0, i), n.slice(i)] : [n, '']
     }
-    const maxOff = Math.max(0, rows.length - height)
-    treeHeight = height
+    // The tree's column: name, count, rule, search; the tree; then (only while git sees changes) a rule with a label
+    // and the changed files, a third of the height at most. The editor's column keeps its full height.
+    const changes: { path: string; name: string; kind: 'N' | 'M' | 'D' }[] = []
+    for (const p of gitNew) changes.push({ path: p, name: p.slice(p.lastIndexOf('/') + 1), kind: 'N' })
+    for (const p of gitMod) changes.push({ path: p, name: p.slice(p.lastIndexOf('/') + 1), kind: 'M' })
+    for (const p of gitDel) changes.push({ path: p, name: p.slice(p.lastIndexOf('/') + 1), kind: 'D' })
+    changes.sort((a, b) => a.path.localeCompare(b.path))
+    const shownChanges = (q ? changes.filter(c => c.name.toLowerCase().includes(q)) : changes).slice(0, 500)
+    const cheight = changes.length ? Math.min(changes.length, Math.max(3, Math.floor((H - 6) / 3))) : 0
+    const theight = Math.max(1, height - 1 - (cheight ? cheight + 1 : 0))
+    chgHeight = cheight
+    chgCount = shownChanges.length
+    chgFrom = cheight ? HEAD + 1 + theight : -1
+    const cmaxOff = Math.max(0, shownChanges.length - cheight)
+    const cstart = Math.min(await read($, chgOff), cmaxOff)
+    const maxOff = Math.max(0, rows.length - theight)
+    treeHeight = theight
+    wheelRows = rows.length
     editColsLive = editW + 1
     void update($, treeMax, () => maxOff)
     void update($, editCols, () => editW + 1)
@@ -956,7 +1127,7 @@ export const register: Register = on => {
     editCols2 = Math.max(8, editW - String(known.split('\n').length).length - 4)
     const isBig = text.length > MAX_EDIT
     const start = Math.min(off, maxOff)
-    const shown = rows.slice(start, start + height)
+    const shown = rows.slice(start, start + theight)
     const dirs = rows.filter(r => r.isDir).length
     const activeName = active.split('/').pop() ?? ''
     const rel = active.startsWith(root + '/') ? active.slice(root.length + 1) : active
@@ -997,21 +1168,34 @@ export const register: Register = on => {
           </Text>
           <Text color={GRAY}>
             {rows.length >= MAX_ROWS ? MAX_ROWS + '+' : rows.length} stavki · {dirs} foldera
-            {maxOff > 0 ? ' · ' + (start + 1) + '–' + Math.min(rows.length, start + height) : ''}
+            {maxOff > 0 ? ' · ' + (start + 1) + '–' + Math.min(rows.length, start + theight) : ''}
           </Text>
           <Text color={GRAY}>{'─'.repeat(treeW)}</Text>
+          <Input
+            key="search"
+            label="⌕ "
+            placeholder="Traži fajl ili folder"
+            value={rawQuery}
+            onInput={(v: string) => {
+              void update($, query, () => v)
+              void update($, treeOff, () => 0)
+              void update($, chgOff, () => 0)
+            }}
+            onSubmit={() => {}}
+          />
+          {q && !shown.length ? <Text color={GRAY}>Nema rezultata.</Text> : null}
           {shown.map(r => {
             const guide = '│ '.repeat(r.depth)
             const room = treeW - 2 - r.depth * 2 - 2
             if (r.isDir) {
-              const isOpen = expanded.has(r.path)
+              const isOpen = q ? false : expanded.has(r.path)
               const label = r.name.length > room ? r.name.slice(0, Math.max(1, room - 1)) + '…' : r.name
 
               const dbg = bgOf(r.path, true)
               const dpad = dbg ? ' '.repeat(Math.max(0, room - label.length)) : ''
 
               return (
-                <Button key={r.path} plain onPress={() => toggle(r.path)}>
+                <Button key={r.path} plain onPress={() => (q ? reveal(r.path) : toggle(r.path))}>
                   <Text color="#3b4048">{guide}</Text>
                   <Text color={ORANGE} backgroundColor={dbg}>{isOpen ? '▾ ' : '▸ '}</Text>
                   <Text bold color={isOpen ? '#e6e6e6' : '#c0c5ce'} backgroundColor={dbg}>{label}{dpad}</Text>
@@ -1032,7 +1216,7 @@ export const register: Register = on => {
             const bg = isActive ? ACTIVE_BG : tinted
 
             return (
-              <Button key={r.path} plain onPress={() => openFile($, r.path)}>
+              <Button key={r.path} plain onPress={() => { if (q) reveal(r.path, true); return openFile($, r.path) }}>
                 <Text color="#3b4048">{guide}</Text>
                 <Text color={ORANGE} backgroundColor={bg}>{isActive ? '▎' : ' '}</Text>
                 <Text color={icoColor} backgroundColor={bg}>{ico + ' '}</Text>
@@ -1041,6 +1225,43 @@ export const register: Register = on => {
               </Button>
             )
           })}
+          {cheight ? (
+            <Text>
+              <Text color={GRAY}>{'─ '}</Text>
+              <Text bold color={ORANGE}>{'IZMJENE'}</Text>
+              <Text color={GRAY}>{' · ' + shownChanges.length + (cmaxOff > 0 ? ' · ' + (cstart + 1) + '–' + Math.min(shownChanges.length, cstart + cheight) : '') + ' '}</Text>
+              <Text color={GRAY}>{'─'.repeat(Math.max(0, treeW - 14 - String(shownChanges.length).length - (cmaxOff > 0 ? 8 : 0)))}</Text>
+            </Text>
+          ) : null}
+          {cheight && q && !shownChanges.length ? <Text color={GRAY}>Nema rezultata.</Text> : null}
+          {cheight ? shownChanges.slice(cstart, cstart + cheight).map(c => {
+            const [ico, icoColor] = iconOf(c.name)
+            const st = gitStat.get(c.path)
+            const counts = st ? ` +${st[0]} −${st[1]}` : ''
+            const avail = Math.max(4, treeW - 2 - 3 - counts.length)
+            const nm = c.name.length > avail ? c.name.slice(0, Math.max(1, avail - 1)) + '…' : c.name
+            const relDir = c.path.startsWith(root + '/') ? c.path.slice(root.length + 1, c.path.lastIndexOf('/')) : ''
+            const left = avail - nm.length - 2
+            const dirShown = relDir && left >= 4 ? (relDir.length > left ? '…' + relDir.slice(relDir.length - left + 1) : relDir) : ''
+            const pad = ' '.repeat(Math.max(0, avail - nm.length - (dirShown ? dirShown.length + 2 : 0)))
+            const isAct = c.path === active
+            const bg = isAct ? ACTIVE_BG : undefined
+            const kc = c.kind === 'N' ? '#7fbf8f' : c.kind === 'D' ? '#f7768e' : '#6cb6ff'
+            const body = (
+              <Text>
+                <Text bold color={kc} backgroundColor={bg}>{c.kind}</Text>
+                <Text color={c.kind === 'D' ? GRAY : icoColor} backgroundColor={bg}>{ico + ' '}</Text>
+                <Text bold={isAct} color={c.kind === 'D' ? GRAY : isAct ? '#ffffff' : '#c0c5ce'} backgroundColor={bg}>{nm}</Text>
+                <Text color={GRAY} backgroundColor={bg}>{dirShown ? '  ' + dirShown : ''}{pad}</Text>
+                {st ? <Text backgroundColor={bg}><Text color="#7fbf8f">{' +' + st[0]}</Text><Text color="#f7768e">{' −' + st[1]}</Text></Text> : null}
+              </Text>
+            )
+
+            // A deleted file has nothing to open: shown dim, not pressable.
+            return c.kind === 'D' ? <Box key={'c' + c.path}>{body}</Box> : (
+              <Button key={'c' + c.path} plain onPress={() => { if (q) reveal(c.path, true); return openFile($, c.path) }}>{body}</Button>
+            )
+          }) : null}
         </Box>
       </Box>
       {/* One row past the window: a body that fits shows nothing to scroll, and the engine then sends no wheel at all. */}
