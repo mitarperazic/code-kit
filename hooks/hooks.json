@@ -1,8 +1,17 @@
 {
-  "modules": ["./register.tsx"],
+  "modules": [
+    "./register.tsx"
+  ],
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "printf '<profile-rules>\\n'; cat \"${CLAUDE_PLUGIN_ROOT}/rules/profile.md\"; printf '\\n</profile-rules>\\n<design-rules>\\n'; cat \"${CLAUDE_PLUGIN_ROOT}/rules/design-rules.md\"; printf '\\n</design-rules>\\n'" } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "grep -qE '\"rules\"[[:space:]]*:[[:space:]]*true' \"$HOME/.claude/code-kit.json\" 2>/dev/null && { printf '<profile-rules>\\n'; cat \"${CLAUDE_PLUGIN_ROOT}/rules/profile.md\"; printf '\\n</profile-rules>\\n<design-rules>\\n'; cat \"${CLAUDE_PLUGIN_ROOT}/rules/design-rules.md\"; printf '\\n</design-rules>\\n'; }; true"
+          }
+        ]
+      }
     ]
   }
 }

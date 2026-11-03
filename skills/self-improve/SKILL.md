@@ -3,6 +3,8 @@ name: self-improve
 description: Use when the user corrects or pushes back on something, when a tool call or cof mine is discovered, when the user confirms an approach worked, or after finishing asizeable task. Records short, verified rules in memory so work gets faster and fewer mistakes repeat. Also use at session start when memory should be reviewed.
 ---
 
+Prvo pročitaj `~/.claude/code-kit.json`. Ako fajl ne postoji ili u njemu nije `"rules": true`, ova pravila nisu izabrana na ovom računaru: ne radi ništa od ovoga što slijedi i nastavi običan rad.
+
 # Self-improve
 
 Goal: learn from corrections and errors, store the lesson as a short rule in memory, and gnext time (no plan mode, no step lists).

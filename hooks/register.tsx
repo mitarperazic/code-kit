@@ -79,7 +79,7 @@ const isProject = async ($: any): Promise<boolean> => {
 
 // What the person turned on with /code-kit:config, kept in ~/.claude/code-kit.json (absent = everything on):
 // panel = the structure and editor pane, stats = the status line under the prompt.
-let cfg = { panel: true, stats: true }
+let cfg = { panel: true, stats: true, icons: false }
 let cfgRaw = ''
 async function loadConfig($: any): Promise<boolean> {
   let raw = ''
@@ -92,8 +92,9 @@ async function loadConfig($: any): Promise<boolean> {
   try {
     j = JSON.parse(raw || '{}')
   } catch {}
-  const next = { panel: j.panel !== false, stats: j.stats !== false }
-  const changed = next.panel !== cfg.panel || next.stats !== cfg.stats
+  // panel and stats are on unless turned off; icons (they need a Nerd Font) and rules are off unless turned on.
+  const next = { panel: j.panel !== false, stats: j.stats !== false, icons: j.icons === true }
+  const changed = next.panel !== cfg.panel || next.stats !== cfg.stats || next.icons !== cfg.icons
   cfg = next
 
   return changed
@@ -121,8 +122,7 @@ const MAX_ROWS = 400
 
 
 // File-type icons for the tree: Nerd Font glyphs, so the terminal's font must be a Nerd Font (JetBrainsMono Nerd Font,
-// say). Set FILE_ICONS to false for a plain dot instead.
-const FILE_ICONS = true
+// say). Shown only when chosen in /code-kit:config (cfg.icons); otherwise a plain dot.
 const g = (n: number) => String.fromCodePoint(n)
 const ICON_BY_EXT: Record<string, [string, string]> = {
   js: [g(0xe74e), '#f1e05a'], mjs: [g(0xe74e), '#f1e05a'], cjs: [g(0xe74e), '#f1e05a'],
@@ -146,7 +146,7 @@ const ICON_BY_NAME: Record<string, [string, string]> = {
 }
 const DEFAULT_ICON: [string, string] = [g(0xf15b), '#9aa0ab']
 const iconOf = (name: string): [string, string] => {
-  if (!FILE_ICONS) return ['•', '#5c6370']
+  if (!cfg.icons) return ['•', '#5c6370']
   const n = name.toLowerCase()
   return ICON_BY_NAME[n] ?? ICON_BY_EXT[n.slice(n.lastIndexOf('.') + 1)] ?? DEFAULT_ICON
 }
@@ -395,6 +395,7 @@ async function refresh($: any, quiet = false, byClaude = busy) {
     else void $.ui.close({ id: PANE })
     statusAt = 0
     await update($, stick, n => n + 1)
+    await update($, tick, n => n + 1)
   }
   if (!cfg.panel) {
     if (cfg.stats) void updateStatus($)
@@ -1085,15 +1086,6 @@ export const register: Register = on => {
       (isDir ? gitNewDirs.has(p) && !gitTrackedDirs.has(p) : gitNew.has(p)) ? NEW_BG
       : (isDir ? gitNewDirs.has(p) || gitModDirs.has(p) : gitMod.has(p)) ? MOD_BG
       : undefined
-    const tint = (n: string) =>
-      /\.(java|kt|swift|py|rb|go|rs)$/.test(n) ? '#e5c07b'
-      : /\.(tsx?|jsx?|mjs|cjs)$/.test(n) ? '#7aa2f7'
-      : /\.(css|scss|sass|less|html|vue|svelte)$/.test(n) ? '#bb9af7'
-      : /\.(json|ya?ml|toml|xml|env|properties|conf|ini|lock)$/.test(n) || n === 'Makefile' || n === 'Dockerfile' ? '#e0af68'
-      : /\.(md|mdx|txt|pdf|docx)$/.test(n) ? '#9ece6a'
-      : /\.(png|jpe?g|gif|svg|webp|ico|mp4|mov)$/.test(n) ? '#73daca'
-      : /\.(sh|bash|zsh|sql)$/.test(n) ? '#f7768e'
-      : undefined
     const split = (n: string) => {
       const i = n.lastIndexOf('.')
 
@@ -1204,7 +1196,7 @@ export const register: Register = on => {
             }
             const isActive = r.path === active
             const [base, ext] = split(r.name)
-            const color = isActive ? '#ffffff' : tint(r.name) ?? '#9aa0ab'
+            const color = isActive ? '#ffffff' : '#c0c5ce'
             const dot = r.name.startsWith('.')
             const [ico, icoColor] = iconOf(r.name)
             const froom = room - 1
