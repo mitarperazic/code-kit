@@ -1127,7 +1127,7 @@ export const register: Register = on => {
     const ORANGE = '#d97757'
     const total = Math.max(40, (e.props.bodyColumns ?? 80) - 2)
     const treeW = Math.max(20, Math.min(34, Math.floor(total * 0.38)))
-    const editW = Math.max(20, total - treeW - 3)
+    const editW = Math.max(20, total - treeW - 5)
     const fit = (t: string, used: number) =>
       t.length + used > treeW - 2 ? t.slice(0, Math.max(1, treeW - 2 - used - 1)) + '…' : t
     const GRAY = '#6b7280'
@@ -1187,6 +1187,18 @@ export const register: Register = on => {
     const shown = rows.slice(start, start + theight)
     const dirs = rows.filter(r => r.isDir).length
     const activeName = active.split('/').pop() ?? ''
+    // Scroll indicator at the right edge: one cell per visible row, a bright thumb sized and placed by the window.
+    // Empty (blank cells) while everything fits, so it only shows when there is something to scroll.
+    const barCells = (len: number, total: number, from: number, max: number) => {
+      if (len <= 0) return [] as string[]
+      if (max <= 0 || total <= len) return Array.from({ length: len }, () => ' ')
+      const size = Math.max(1, Math.round((len * len) / total))
+      const pos = Math.round((from / max) * (len - size))
+
+      return Array.from({ length: len }, (_, i) => (i >= pos && i < pos + size ? '█' : '│'))
+    }
+    const treeBar = barCells(theight, rows.length, start, maxOff)
+    const chgBar = cheight ? barCells(cheight, shownChanges.length, cstart, cmaxOff) : []
     const rel = active.startsWith(root + '/') ? active.slice(root.length + 1) : active
 
     return (
@@ -1331,6 +1343,12 @@ export const register: Register = on => {
               <Button key={'c' + c.path} plain onPress={() => { if (q) reveal(c.path, true); return openFile($, c.path) }}>{body}</Button>
             )
           }) : null}
+        </Box>
+        <Box flexDirection="column" width={1} marginLeft={1}>
+          {Array.from({ length: HEAD + 1 }, (_, i) => <Text key={'bh' + i}> </Text>)}
+          {treeBar.map((c, i) => <Text key={'bt' + i} color={c === '█' ? ORANGE : '#3b4048'}>{c}</Text>)}
+          {cheight ? <Text> </Text> : null}
+          {chgBar.map((c, i) => <Text key={'bc' + i} color={c === '█' ? ORANGE : '#3b4048'}>{c}</Text>)}
         </Box>
       </Box>
       {/* One row past the window: a body that fits shows nothing to scroll, and the engine then sends no wheel at all. */}

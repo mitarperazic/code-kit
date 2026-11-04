@@ -350,7 +350,7 @@ export default function Editor(props: Props, surface: any) {
   const ext = (props.path.split('.').pop() ?? '').toLowerCase()
   // The first gutter column holds the revert button of a changed line; one space then separates it from the number.
   const gutterW = String(m.lines.length).length + 3
-  const textW = Math.max(8, cols - gutterW - 1)
+  const textW = Math.max(8, cols - gutterW - 3)
 
   // The wheel (a running total from the hooks module, 0 when a file opens) moves the
   // window with no click first; typing or a click brings it back to the cursor.
@@ -610,6 +610,13 @@ export default function Editor(props: Props, surface: any) {
   const sel = order(m)
   const active = isActive()
   const out = []
+  // Scroll indicator in the column right of the text: a thumb sized and placed by the window, blank when all fits.
+  const total = m.lines.length
+  const maxTop = Math.max(0, total - rows)
+  const thumb = Math.max(1, Math.round((rows * rows) / Math.max(total, 1)))
+  const thumbAt = maxTop > 0 ? Math.round((top / maxTop) * (rows - thumb)) : 0
+  const barAt = (i: number) =>
+    maxTop <= 0 ? <Text> </Text> : i >= thumbAt && i < thumbAt + thumb ? <Text color="#d97757">█</Text> : <Text color="#3b4048">│</Text>
   for (let r = top; r < Math.min(m.lines.length, top + rows); r++) {
     const text = m.lines[r]
     const t = tokenize(text, ext, inBlock)
@@ -667,12 +674,15 @@ export default function Editor(props: Props, surface: any) {
         ))}
         {mark && pad > 0 && <Text backgroundColor={MARK_BG}>{' '.repeat(fits ? pad - label.length - 1 : pad)}</Text>}
         {mark && fits && <Text color={MARK_FG} backgroundColor={MARK_BG}>{label + ' '}</Text>}
+        {!mark && <Text>{' '.repeat(Math.max(0, textW - used))}</Text>}
+        <Text> </Text>
+        {barAt(r - top)}
       </Text>,
     )
   }
 
   // A short file leaves the window half empty: pad it so the bar stays on the last row.
-  for (let i = out.length; i < rows; i++) out.push(<Text key={'pad' + i}> </Text>)
+  for (let i = out.length; i < rows; i++) out.push(<Text key={'pad' + i}>{' '.repeat(gutterW + textW + 1)}{barAt(i)}</Text>)
 
   // The bar: the wheel over this row scrolls sideways; elsewhere it scrolls up and down.
   const longest = m.lines.reduce((n, l) => Math.max(n, l.length), 0)
