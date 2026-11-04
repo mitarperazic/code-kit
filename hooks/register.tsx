@@ -1130,8 +1130,17 @@ export const register: Register = on => {
     const editW = Math.max(20, total - treeW - 5)
     const fit = (t: string, used: number) =>
       t.length + used > treeW - 2 ? t.slice(0, Math.max(1, treeW - 2 - used - 1)) + '…' : t
+    // Panel palette: the only place the colours of the tree, changes and editor header are set.
     const GRAY = '#6b7280'
     const ACTIVE_BG = '#2f3340'
+    const SEARCH_BG = '#2b2b2b'
+    const TEXT = '#c0c5ce'
+    const TEXT_HI = '#ffffff'
+    const TEXT_SUB = '#aab1c0'
+    const FAINT = '#3b4048'
+    const OK = '#7fbf8f'
+    const DEL = '#f7768e'
+    const MOD = '#6cb6ff'
     const NEW_BG = '#1f3a2a' // new: green
     const MOD_BG = '#1f3050' // changed: blue
     const bgOf = (p: string, isDir: boolean) =>
@@ -1206,8 +1215,8 @@ export const register: Register = on => {
       <Box flexDirection="row" paddingX={1}>
         <Box flexDirection="column" width={editW}>
           <Text bold color={ORANGE}>{active ? activeName : 'EDITOR'}</Text>
-          {notice ? <Text color="#9ece6a" bold>{notice}</Text> : <Text dimColor>{active ? (isBig ? 'samo pregled (fajl prevelik) · ' : '') + fit(rel, 0) : 'Izaberi fajl iz strukture'}</Text>}
-          <Text dimColor>{'─'.repeat(editW)}</Text>
+          {notice ? <Text color={OK}>{notice}</Text> : <Text dimColor>{active ? (isBig ? 'samo pregled (fajl prevelik) · ' : '') + fit(rel, 0) : 'Izaberi fajl iz strukture'}</Text>}
+          <Text> </Text>
           {active && (
             <Client
               key="editor"
@@ -1220,14 +1229,14 @@ export const register: Register = on => {
         </Box>
         <Box flexDirection="column" width={3} alignItems="center">
           {Array.from({ length: H }, (_, i) => (
-            <Text key={'sep' + i} dimColor>│</Text>
+            <Text key={'sep' + i} color={FAINT}>│</Text>
           ))}
         </Box>
         <Box flexDirection="column" width={treeW}>
           <Text>
             <Text bold color={ORANGE}>{fit(name.toUpperCase(), 0)}</Text>
             {branchName && treeW - Math.min(name.length, treeW - 3) - 3 >= 4 ? (
-              <Text color={GRAY}>{' · '}<Text color="#e6e6e6">{(() => {
+              <Text color={GRAY}>{' · '}<Text color={TEXT}>{(() => {
                 const room = treeW - Math.min(name.length, treeW - 3) - 3
                 const b = branchName.toUpperCase()
 
@@ -1239,7 +1248,8 @@ export const register: Register = on => {
             {rows.length >= MAX_ROWS ? MAX_ROWS + '+' : rows.length} stavki · {dirs} foldera
             {maxOff > 0 ? ' · ' + (start + 1) + '–' + Math.min(rows.length, start + theight) : ''}
           </Text>
-          <Text color={GRAY}>{'─'.repeat(treeW)}</Text>
+          <Text> </Text>
+          <Box backgroundColor={SEARCH_BG}>
           <Input
             key="search"
             label="⌕ "
@@ -1264,9 +1274,10 @@ export const register: Register = on => {
               }
             }}
           />
+          </Box>
           {q && !shown.length ? <Text color={GRAY}>Nema rezultata.</Text> : null}
           {shown.map(r => {
-            const guide = '│ '.repeat(r.depth)
+            const guide = '  '.repeat(r.depth)
             const room = treeW - 2 - r.depth * 2 - 2
             if (r.isDir) {
               const isOpen = q ? false : expanded.has(r.path)
@@ -1277,15 +1288,15 @@ export const register: Register = on => {
 
               return (
                 <Button key={r.path} plain onPress={() => (q ? reveal(r.path) : toggle(r.path))}>
-                  <Text color="#3b4048">{guide}</Text>
-                  <Text color={ORANGE} backgroundColor={dbg}>{isOpen ? '▾ ' : '▸ '}</Text>
-                  <Text bold color={isOpen ? '#e6e6e6' : '#c0c5ce'} backgroundColor={dbg}>{label}{dpad}</Text>
+                  <Text>{guide}</Text>
+                  <Text color={GRAY} backgroundColor={dbg}>{isOpen ? '▾ ' : '▸ '}</Text>
+                  <Text color={isOpen ? TEXT_HI : TEXT} backgroundColor={dbg}>{label}{dpad}</Text>
                 </Button>
               )
             }
             const isActive = r.path === active
             const [base, ext] = split(r.name)
-            const color = isActive ? '#ffffff' : '#c0c5ce'
+            const color = isActive ? TEXT_HI : TEXT
             const dot = r.name.startsWith('.')
             const [ico, icoColor] = iconOf(r.name)
             const froom = room - 1
@@ -1298,20 +1309,18 @@ export const register: Register = on => {
 
             return (
               <Button key={r.path} plain onPress={() => { if (q) reveal(r.path, true); return openFile($, r.path) }}>
-                <Text color="#3b4048">{guide}</Text>
+                <Text>{guide}</Text>
                 <Text color={ORANGE} backgroundColor={bg}>{isActive ? '▎' : ' '}</Text>
                 <Text color={icoColor} backgroundColor={bg}>{ico + ' '}</Text>
                 <Text bold={isActive} color={dot ? GRAY : color} backgroundColor={bg}>{baseShown}</Text>
-                <Text color={isActive ? '#aab1c0' : GRAY} backgroundColor={bg}>{extShown}{pad}</Text>
+                <Text color={isActive ? TEXT_SUB : GRAY} backgroundColor={bg}>{extShown}{pad}</Text>
               </Button>
             )
           })}
           {cheight ? (
             <Text>
-              <Text color={GRAY}>{'─ '}</Text>
               <Text bold color={ORANGE}>{'IZMJENE'}</Text>
-              <Text color={GRAY}>{' · ' + shownChanges.length + (cmaxOff > 0 ? ' · ' + (cstart + 1) + '–' + Math.min(shownChanges.length, cstart + cheight) : '') + ' '}</Text>
-              <Text color={GRAY}>{'─'.repeat(Math.max(0, treeW - 14 - String(shownChanges.length).length - (cmaxOff > 0 ? 8 : 0)))}</Text>
+              <Text color={GRAY}>{' · ' + shownChanges.length + (cmaxOff > 0 ? ' · ' + (cstart + 1) + '–' + Math.min(shownChanges.length, cstart + cheight) : '')}</Text>
             </Text>
           ) : null}
           {cheight && q && !shownChanges.length ? <Text color={GRAY}>Nema rezultata.</Text> : null}
@@ -1327,14 +1336,14 @@ export const register: Register = on => {
             const pad = ' '.repeat(Math.max(0, avail - nm.length - (dirShown ? dirShown.length + 2 : 0)))
             const isAct = c.path === active
             const bg = isAct ? ACTIVE_BG : undefined
-            const kc = c.kind === 'N' ? '#7fbf8f' : c.kind === 'D' ? '#f7768e' : '#6cb6ff'
+            const kc = c.kind === 'N' ? OK : c.kind === 'D' ? DEL : MOD
             const body = (
               <Text>
-                <Text bold color={kc} backgroundColor={bg}>{c.kind}</Text>
+                <Text color={kc} backgroundColor={bg}>{c.kind}</Text>
                 <Text color={c.kind === 'D' ? GRAY : icoColor} backgroundColor={bg}>{ico + ' '}</Text>
-                <Text bold={isAct} color={c.kind === 'D' ? GRAY : isAct ? '#ffffff' : '#c0c5ce'} backgroundColor={bg}>{nm}</Text>
+                <Text bold={isAct} color={c.kind === 'D' ? GRAY : isAct ? TEXT_HI : TEXT} backgroundColor={bg}>{nm}</Text>
                 <Text color={GRAY} backgroundColor={bg}>{dirShown ? '  ' + dirShown : ''}{pad}</Text>
-                {st ? <Text backgroundColor={bg}><Text color="#7fbf8f">{' +' + st[0]}</Text><Text color="#f7768e">{' −' + st[1]}</Text></Text> : null}
+                {st ? <Text backgroundColor={bg}><Text color={OK}>{' +' + st[0]}</Text><Text color={DEL}>{' −' + st[1]}</Text></Text> : null}
               </Text>
             )
 
@@ -1346,9 +1355,9 @@ export const register: Register = on => {
         </Box>
         <Box flexDirection="column" width={1} marginLeft={1}>
           {Array.from({ length: HEAD + 1 }, (_, i) => <Text key={'bh' + i}> </Text>)}
-          {treeBar.map((c, i) => <Text key={'bt' + i} color={c === '█' ? ORANGE : '#3b4048'}>{c}</Text>)}
+          {treeBar.map((c, i) => <Text key={'bt' + i} color={c === '█' ? ORANGE : FAINT}>{c}</Text>)}
           {cheight ? <Text> </Text> : null}
-          {chgBar.map((c, i) => <Text key={'bc' + i} color={c === '█' ? ORANGE : '#3b4048'}>{c}</Text>)}
+          {chgBar.map((c, i) => <Text key={'bc' + i} color={c === '█' ? ORANGE : FAINT}>{c}</Text>)}
         </Box>
       </Box>
       {/* One row past the window: a body that fits shows nothing to scroll, and the engine then sends no wheel at all. */}

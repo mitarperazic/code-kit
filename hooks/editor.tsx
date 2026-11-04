@@ -20,6 +20,9 @@ const C = {
   func: '#dcdcaa',
   type: '#4ec9b0',
   key: '#9cdcfe',
+  accent: '#d97757',
+  faint: '#3b4048',
+  sub: '#8b93a5',
 }
 
 type Tok = { s: string; c: string }
@@ -557,7 +560,7 @@ export default function Editor(props: Props, surface: any) {
       const setTop = (y: number) => {
         const span = Math.max(1, rows - thumb)
         const t = Math.max(0, Math.min(maxTop, Math.round(((y - (barGrab ?? 0)) / span) * maxTop)))
-        const next = { ...cur0, top: t, left, pin: true }
+        const next = { ...cur0, top: t, left, pin: true, wheel: props.wheel ?? 0, hwheel: props.hwheel ?? 0 }
         live = next
         lastTop = t
         surface.setState(next)
@@ -566,13 +569,13 @@ export default function Editor(props: Props, surface: any) {
       // The sideways bar (last row): same idea, along the row.
       const longest = cur0.lines.reduce((n, l) => Math.max(n, l.length), 0)
       const maxLeft = Math.max(0, longest - textW + 1)
-      const whereLen = (longest > textW ? (' ' + (left + 1) + '–' + Math.min(longest, left + textW) + ' / ' + longest + ' ').length : ' bez prelaska '.length)
+      const whereLen = (longest > textW ? (' ' + (left + 1) + '–' + Math.min(longest, left + textW) + ' / ' + longest + ' ').length : ''.length)
       const trackW = Math.max(1, cols - whereLen)
       const hThumb = Math.max(1, Math.min(trackW, Math.round((trackW * textW) / Math.max(longest, 1))))
       const setLeft = (x: number) => {
         const span = Math.max(1, trackW - hThumb)
         const l = Math.max(0, Math.min(maxLeft, Math.round(((x - (hGrab ?? 0)) / span) * maxLeft)))
-        const next = { ...cur0, left: l, top, pin: true }
+        const next = { ...cur0, left: l, top, pin: true, wheel: props.wheel ?? 0, hwheel: props.hwheel ?? 0 }
         live = next
         lastLeft = l
         surface.setState(next)
@@ -682,7 +685,7 @@ export default function Editor(props: Props, surface: any) {
   const thumb = Math.max(1, Math.round((rows * rows) / Math.max(total, 1)))
   const thumbAt = maxTop > 0 ? Math.round((top / maxTop) * (rows - thumb)) : 0
   const barAt = (i: number) =>
-    maxTop <= 0 ? <Text> </Text> : i >= thumbAt && i < thumbAt + thumb ? <Text color="#d97757">█</Text> : <Text color="#3b4048">│</Text>
+    maxTop <= 0 ? <Text> </Text> : i >= thumbAt && i < thumbAt + thumb ? <Text color={C.accent}>█</Text> : <Text color={C.faint}>│</Text>
   for (let r = top; r < Math.min(m.lines.length, top + rows); r++) {
     const text = m.lines[r]
     const t = tokenize(text, ext, inBlock)
@@ -753,17 +756,17 @@ export default function Editor(props: Props, surface: any) {
   // The bar: the wheel over this row scrolls sideways; elsewhere it scrolls up and down.
   const longest = m.lines.reduce((n, l) => Math.max(n, l.length), 0)
   const shownTo = Math.min(longest, left + textW)
-  const where = longest > textW ? ' ' + (left + 1) + '–' + shownTo + ' / ' + longest + ' ' : ' bez prelaska '
+  const where = longest > textW ? ' ' + (left + 1) + '–' + shownTo + ' / ' + longest + ' ' : ''
   const trackW = Math.max(1, cols - where.length)
   const maxLeftD = Math.max(0, longest - textW + 1)
   const hThumb = Math.max(1, Math.min(trackW, Math.round((trackW * textW) / Math.max(longest, 1))))
   const hAt = maxLeftD > 0 ? Math.round((left / maxLeftD) * (trackW - hThumb)) : 0
   out.push(
-    <Text key="bar" backgroundColor="#2a2f3a">
-      <Text color="#3b4048">{'─'.repeat(maxLeftD > 0 ? hAt : trackW)}</Text>
-      <Text color="#d97757">{maxLeftD > 0 ? '█'.repeat(hThumb) : ''}</Text>
-      <Text color="#3b4048">{maxLeftD > 0 ? '─'.repeat(Math.max(0, trackW - hAt - hThumb)) : ''}</Text>
-      <Text color="#8b93a5">{where.slice(0, cols - trackW)}</Text>
+    <Text key="bar">
+      <Text color={C.faint}>{maxLeftD > 0 ? '─'.repeat(hAt) : ' '.repeat(trackW)}</Text>
+      <Text color={C.accent}>{maxLeftD > 0 ? '█'.repeat(hThumb) : ''}</Text>
+      <Text color={C.faint}>{maxLeftD > 0 ? '─'.repeat(Math.max(0, trackW - hAt - hThumb)) : ''}</Text>
+      <Text color={C.sub}>{where.slice(0, cols - trackW)}</Text>
     </Text>,
   )
 
