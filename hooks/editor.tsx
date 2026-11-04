@@ -249,6 +249,7 @@ type State = {
   anchor: Pos | null
   undo: Snap[]
   hold?: boolean
+  pin?: boolean
 }
 type Props = { path: string; text: string; wheel?: number; scrollTo?: number; hwheel?: number; scrollLeft?: number; marks?: Marks; readOnly?: boolean; rev?: number; base?: string[] | null; focused?: boolean; paste?: { id: number; text: string } | null }
 
@@ -275,6 +276,9 @@ const isActive = () => lastActive > 0 && (typeof Date === 'undefined' || Date.no
 const blinkers = new WeakSet<object>()
 // Set just before a commit that must leave the sideways window where it is (a whole-line selection).
 let holdNext = false
+// Scroll-bar drag: the grab offset inside the thumb (null: not dragging the bar).
+let barGrab: number | null = null
+let hGrab: number | null = null
 type Click = { row: number; col: number; t: number; count: number }
 let lastClick: Click | null = null
 
@@ -358,6 +362,9 @@ export default function Editor(props: Props, surface: any) {
   let top = m.top
   if (rolled !== 0) {
     top = Math.max(0, Math.min(Math.max(0, m.lines.length - rows), props.scrollTo ?? m.top))
+  } else if (m.pin) {
+    // Scroll bar dragged by the mouse: the window stays where the thumb put it.
+    top = Math.max(0, Math.min(Math.max(0, m.lines.length - rows), m.top))
   } else {
     if (m.row < top) top = m.row
     if (m.row >= top + rows) top = m.row - rows + 1
@@ -367,7 +374,10 @@ export default function Editor(props: Props, surface: any) {
     const longest = m.lines.reduce((n, l) => Math.max(n, l.length), 0)
     left = Math.max(0, Math.min(Math.max(0, longest - textW + 1), props.scrollLeft ?? m.left))
   } else {
-    if (!m.hold) {
+    if (m.pin) {
+      const longest = m.lines.reduce((n, l) => Math.max(n, l.length), 0)
+      left = Math.max(0, Math.min(Math.max(0, longest - textW + 1), m.left))
+    } else if (!m.hold) {
       if (m.col < left) left = m.col
       if (m.col >= left + textW) left = m.col - textW + 1
     }
@@ -384,6 +394,7 @@ export default function Editor(props: Props, surface: any) {
     next.top = top
     next.left = left
     next.hold = holdNext
+    next.pin = false
     holdNext = false
     next.wheel = props.wheel ?? 0
     next.hwheel = props.hwheel ?? 0
@@ -537,6 +548,61 @@ export default function Editor(props: Props, surface: any) {
     }
     if (p.type === 'down') stamp()
     const cur0 = live as State
+    // The scroll bar (the column right of the text): click jumps there, dragging the thumb scrolls the window.
+    {
+      const total = cur0.lines.length
+      const maxTop = Math.max(0, total - rows)
+      const thumb = Math.max(1, Math.round((rows * rows) / Math.max(total, 1)))
+      const barX = gutterW + textW
+      const setTop = (y: number) => {
+        const span = Math.max(1, rows - thumb)
+        const t = Math.max(0, Math.min(maxTop, Math.round(((y - (barGrab ?? 0)) / span) * maxTop)))
+        const next = { ...cur0, top: t, left, pin: true }
+        live = next
+        lastTop = t
+        surface.setState(next)
+        surface.post({ top: t, left })
+      }
+      // The sideways bar (last row): same idea, along the row.
+      const longest = cur0.lines.reduce((n, l) => Math.max(n, l.length), 0)
+      const maxLeft = Math.max(0, longest - textW + 1)
+      const whereLen = (longest > textW ? (' ' + (left + 1) + '–' + Math.min(longest, left + textW) + ' / ' + longest + ' ').length : ' bez prelaska '.length)
+      const trackW = Math.max(1, cols - whereLen)
+      const hThumb = Math.max(1, Math.min(trackW, Math.round((trackW * textW) / Math.max(longest, 1))))
+      const setLeft = (x: number) => {
+        const span = Math.max(1, trackW - hThumb)
+        const l = Math.max(0, Math.min(maxLeft, Math.round(((x - (hGrab ?? 0)) / span) * maxLeft)))
+        const next = { ...cur0, left: l, top, pin: true }
+        live = next
+        lastLeft = l
+        surface.setState(next)
+        surface.post({ top, left: l })
+      }
+      if (p.type === 'down' && p.button === 'left' && maxLeft > 0 && p.y >= rows && p.x < trackW) {
+        const at0 = Math.round((left / maxLeft) * (trackW - hThumb))
+        hGrab = p.x >= at0 && p.x < at0 + hThumb ? p.x - at0 : Math.floor(hThumb / 2)
+        drag = false
+        setLeft(p.x)
+        return
+      }
+      if (hGrab !== null) {
+        if (p.type === 'move') setLeft(p.x)
+        else if (p.type === 'up') hGrab = null
+        return
+      }
+      if (p.type === 'down' && p.button === 'left' && maxTop > 0 && p.x >= barX && p.y < rows) {
+        const at0 = Math.round((top / maxTop) * (rows - thumb))
+        barGrab = p.y >= at0 && p.y < at0 + thumb ? p.y - at0 : Math.floor(thumb / 2)
+        drag = false
+        setTop(p.y)
+        return
+      }
+      if (barGrab !== null) {
+        if (p.type === 'move') setTop(p.y)
+        else if (p.type === 'up') barGrab = null
+        return
+      }
+    }
     // Hover: the button lights up under the pointer (the first two columns, so it is easy to hit).
     if (p.type === 'move' && !drag) {
       const over = p.x < 2 && cur0.marks[Math.min(cur0.lines.length - 1, top + p.y)] && props.base ? top + p.y : -1
@@ -688,12 +754,17 @@ export default function Editor(props: Props, surface: any) {
   const longest = m.lines.reduce((n, l) => Math.max(n, l.length), 0)
   const shownTo = Math.min(longest, left + textW)
   const where = longest > textW ? ' ' + (left + 1) + '–' + shownTo + ' / ' + longest + ' ' : ' bez prelaska '
-  const hint = ' ◂  ovdje točak skrola vodoravno  ▸ '
-  const room = Math.max(0, cols - where.length)
-  const lead = Math.max(0, Math.floor((room - hint.length) / 2))
-  const barText = (' '.repeat(lead) + (room >= hint.length ? hint : '◂ ▸')).padEnd(room, ' ').slice(0, room) + where
+  const trackW = Math.max(1, cols - where.length)
+  const maxLeftD = Math.max(0, longest - textW + 1)
+  const hThumb = Math.max(1, Math.min(trackW, Math.round((trackW * textW) / Math.max(longest, 1))))
+  const hAt = maxLeftD > 0 ? Math.round((left / maxLeftD) * (trackW - hThumb)) : 0
   out.push(
-    <Text key="bar" color="#8b93a5" backgroundColor="#2a2f3a">{barText.padEnd(cols, ' ').slice(0, cols)}</Text>,
+    <Text key="bar" backgroundColor="#2a2f3a">
+      <Text color="#3b4048">{'─'.repeat(maxLeftD > 0 ? hAt : trackW)}</Text>
+      <Text color="#d97757">{maxLeftD > 0 ? '█'.repeat(hThumb) : ''}</Text>
+      <Text color="#3b4048">{maxLeftD > 0 ? '─'.repeat(Math.max(0, trackW - hAt - hThumb)) : ''}</Text>
+      <Text color="#8b93a5">{where.slice(0, cols - trackW)}</Text>
+    </Text>,
   )
 
   return <Box flexDirection="column">{out}</Box>
