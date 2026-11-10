@@ -254,7 +254,7 @@ type State = {
   hold?: boolean
   pin?: boolean
 }
-type Props = { path: string; text: string; wheel?: number; scrollTo?: number; hwheel?: number; scrollLeft?: number; marks?: Marks; readOnly?: boolean; rev?: number; base?: string[] | null; focused?: boolean; paste?: { id: number; text: string } | null }
+type Props = { path: string; text: string; wheel?: number; scrollTo?: number; revealId?: number; revealRow?: number; hwheel?: number; scrollLeft?: number; marks?: Marks; readOnly?: boolean; rev?: number; base?: string[] | null; focused?: boolean; paste?: { id: number; text: string } | null }
 
 const NAMED = new Set(['up', 'down', 'left', 'right', 'return', 'tab', 'backspace', 'delete', 'pageup', 'pagedown', 'home', 'end', 'space', 'escape'])
 const SEL_BG = '#264f78'
@@ -266,6 +266,7 @@ let hoverRow = -1
 let live: State | null = null
 let drag = false
 let lastTop = 0
+let lastRevealId = 0
 let lastLeft = 0
 let shiftSeen = false
 // The cursor blinks: shown while true. Any edit or move turns it back on, so it stays solid while typing.
@@ -341,6 +342,14 @@ export default function Editor(props: Props, surface: any) {
           col: Math.min(old.col, fromDisk[Math.min(old.row, fromDisk.length - 1)].length),
           anchor: null,
         }
+  // The hooks module asks to show a changed line: cursor to that row, window around it, held there (pin).
+  if (props.revealId && props.revealId > lastRevealId) {
+    lastRevealId = props.revealId
+    const rr = Math.max(0, Math.min(m.lines.length - 1, props.revealRow ?? 0))
+    const t = Math.max(0, Math.min(Math.max(0, m.lines.length - rows), rr - Math.floor(rows / 3)))
+    m = { ...m, row: rr, col: 0, anchor: null, top: t, pin: true }
+    surface.setState(m)
+  }
   // A paste from the hooks module (it read the clipboard): in once, at the cursor, as one edit.
   let pasted = false
   if (props.paste && !props.readOnly) {

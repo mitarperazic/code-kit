@@ -14,6 +14,104 @@ const edited = atom({ plugin: 'code-kit', key: 'edited' } as const, [], { shape:
 
 // The folder Claude was started in: pinned once, never follows Claude's own cd.
 const home = atom({ plugin: 'code-kit', key: 'home' } as const, '', { shape: 'home-1' })
+// Terminal.app tab of this session, found by the tty of the process the hooks run in.
+let myTty = ''
+const esc = (x: string) => x.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+// True when this Claude session's Terminal tab is not the one the person is looking at.
+const awayFromTab = async ($: any): Promise<boolean> => {
+  if (!myTty) {
+    const r = await $.process.run(['sh', '-c', 'ps -o tty= -p $PPID'])
+    const t = String(r.stdout ?? '').trim()
+    if (/^ttys\d+$/.test(t)) myTty = '/dev/' + t
+  }
+  if (!myTty) return false
+  const front = await $.process.run([
+    'osascript',
+    '-e', 'tell application "System Events" to set fm to name of first process whose frontmost is true',
+    '-e', 'if fm is "Terminal" then',
+    '-e', 'tell application "Terminal" to return tty of selected tab of front window',
+    '-e', 'end if',
+    '-e', 'return "other"',
+  ])
+  return String(front.stdout ?? '').trim() !== myTty
+}
+const projectName = async ($: any): Promise<string> => {
+  const root = await rootDir($)
+  return root.slice(root.lastIndexOf('/') + 1) || root
+}
+// The popup is a small AppKit window (scripts/ccpopup, built from ccpopup.swift on first use).
+const runPopup = async ($: any, cfg: object, timeoutSec: number): Promise<any | null> => {
+  const dir = `${$.plugin.root}/scripts`
+  const bin = `${dir}/ccpopup`
+  const has = await $.process.run(['test', '-x', bin])
+  if (has.exitCode !== 0) {
+    const c = await $.process.run(['swiftc', '-O', `${dir}/ccpopup.swift`, '-o', bin], { timeoutMs: 180000 })
+    if (c.exitCode !== 0) return null
+  }
+  const r = await $.process.run([bin, JSON.stringify(cfg), String(timeoutSec)], { timeoutMs: (timeoutSec + 10) * 1000 })
+  try {
+    return JSON.parse(String(r.stdout ?? '').trim().split('\n').pop() ?? '')
+  } catch {
+    return null
+  }
+}
+// Questions of the AskUserQuestion tool answered in the popup, step by step.
+// Returns the answers (question -> label, multi-select comma-joined) or null when the person
+// backs out, so the engine's own dialog in the terminal opens instead.
+const askInPopup = async ($: any, questions: any[]): Promise<Record<string, string> | null> => {
+  const project = await projectName($)
+  const r = await runPopup(
+    $,
+    {
+      mode: 'ask',
+      project,
+      questions: questions.map(q => ({
+        header: q.header ?? '',
+        question: q.question ?? '',
+        multi: !!q.multiSelect,
+        options: (q.options ?? []).map((o: any) => ({ label: o.label ?? '', description: o.description ?? '' })),
+      })),
+    },
+    600,
+  )
+  return r && r.action === 'answers' && r.answers ? r.answers : null
+}
+const notifyDone = async ($: any, ev: any) => {
+  try {
+    if (!cfg.popups || !(await awayFromTab($))) return
+    const project = await projectName($)
+    // Heading of the answer (a bold or # line) and its first sentence, both stripped of markdown.
+    const clean = (x: string) => x.replace(/[*_`#>]/g, '').replace(/^\s*(?:[-•]|\d+\.)\s+/, '').trim()
+    const lines = String(ev.answer ?? '').split('\n').map((l: string) => l.trim()).filter(Boolean)
+    const isHead = (l: string) => /^\*\*[^*]+\*\*:?$/.test(l) || /^#+\s/.test(l)
+    const headLine = lines.find(isHead)
+    const heading = headLine ? clean(headLine) : ''
+    const sumLine = lines.find((l: string) => !isHead(l))
+    let summary = sumLine ? clean(sumLine) : ''
+    const dot = summary.search(/[.!?](\s|$)/)
+    if (dot > 0) summary = summary.slice(0, dot + 1)
+    if (summary.length > 160) summary = summary.slice(0, 157).trimEnd() + '…'
+    const r = await runPopup($, { mode: 'done', project, heading, body: summary, ok: 'Idi na terminal' }, 120)
+    if (r?.action !== 'ok') return
+    await $.process.run([
+      'osascript',
+      '-e', 'tell application "Terminal"',
+      '-e', 'repeat with w in windows',
+      '-e', 'repeat with t in tabs of w',
+      '-e', `if tty of t is "${myTty}" then`,
+      '-e', 'set miniaturized of w to false',
+      '-e', 'set selected tab of w to t',
+      '-e', 'set index of w to 1',
+      '-e', 'activate',
+      '-e', 'return',
+      '-e', 'end if',
+      '-e', 'end repeat',
+      '-e', 'end repeat',
+      '-e', 'end tell',
+    ])
+  } catch {}
+}
+
 const rootDir = async ($: any): Promise<string> => {
   const pinned = await read($, home)
   if (pinned) return pinned
@@ -79,7 +177,7 @@ const isProject = async ($: any): Promise<boolean> => {
 
 // What the person turned on with /code-kit:config, kept in ~/.claude/code-kit.json (absent = everything on):
 // panel = the structure and editor pane, stats = the status line under the prompt.
-let cfg = { panel: true, stats: true, icons: false }
+let cfg = { panel: true, stats: true, icons: false, popups: true }
 let cfgRaw = ''
 async function loadConfig($: any): Promise<boolean> {
   let raw = ''
@@ -93,8 +191,8 @@ async function loadConfig($: any): Promise<boolean> {
     j = JSON.parse(raw || '{}')
   } catch {}
   // panel and stats are on unless turned off; icons (they need a Nerd Font) and rules are off unless turned on.
-  const next = { panel: j.panel !== false, stats: j.stats !== false, icons: j.icons === true }
-  const changed = next.panel !== cfg.panel || next.stats !== cfg.stats || next.icons !== cfg.icons
+  const next = { panel: j.panel !== false, stats: j.stats !== false, icons: j.icons === true, popups: j.popups !== false }
+  const changed = next.panel !== cfg.panel || next.stats !== cfg.stats || next.icons !== cfg.icons || next.popups !== cfg.popups
   cfg = next
 
   return changed
@@ -173,7 +271,8 @@ async function ensureKnown($: any): Promise<void> {
 // (a running total drifts past the ends and leaves a dead zone on the way back).
 let editTop = 0
 let editRows = 20
-const WHEEL_STEP = 3
+// One wheel tick moves the editor by one line (the sign of the event only), for a smooth scroll.
+const WHEEL_STEP = 1
 // Sideways, the same way: the first column shown, moved by the wheel while shift is held.
 let editLeft = 0
 let editCols2 = 60
@@ -339,7 +438,7 @@ let editColsLive = 0
 // The row of the pane body where the editor's sideways-scroll bar is drawn.
 let barRow = -1
 
-async function openFile($: any, path: string) {
+async function openFile($: any, path: string, reveal = false) {
   let text = ''
   try {
     text = await $.fs.read(path)
@@ -352,6 +451,8 @@ async function openFile($: any, path: string) {
   gitLinesFor = ''
   editTop = 0
   editLeft = 0
+  revealLine = -1
+  revealPending = reveal
   await update($, wheel, () => 0)
   await update($, hwheel, () => 0)
   await update($, file, () => path)
@@ -374,7 +475,7 @@ async function markEdited($: any, paths: string[], openIt = false, force = false
   const shownList = force ? paths.filter(Boolean) : fresh
   if (openIt && shownList.length) {
     const last = shownList[shownList.length - 1]
-    if ((await read($, file)) !== last) await openFile($, last)
+    if ((await read($, file)) !== last) await openFile($, last, true)
   }
 }
 
@@ -434,6 +535,11 @@ async function refresh($: any, quiet = false, byClaude = busy) {
       await update($, rev, n => n + 1)
       changed = true
     }
+    if (revealPending && gitLinesFor === cur) {
+      revealPending = false
+      const first = Object.keys(gitLines).map(Number).sort((x, y) => x - y)[0]
+      if (first !== undefined) await revealNow($, first)
+    }
   }
   if (!quiet || changed) await update($, tick, n => n + 1)
 }
@@ -452,12 +558,41 @@ async function syncOpenFile($: any, byClaude: boolean): Promise<boolean> {
   }
   if (flushing || pendingWrite || lastEditAt >= startedAt - 5) return false
   if (text === known) return false
+  if (byClaude) {
+    // Claude's edit: the window follows the first line that differs from what was shown.
+    const a = known.split('\n')
+    const b = text.split('\n')
+    let i = 0
+    while (i < a.length && i < b.length && a[i] === b[i]) i++
+    revealLine = Math.min(i, Math.max(0, b.length - 1))
+    revealPending = false
+  }
   known = text
   await update($, draft, () => text)
   await update($, rev, n => n + 1)
+  await revealNow($)
 
   return true
 }
+
+// Scroll of the editor to changed lines: after Claude's edit (first differing line) and when a file is opened
+// (first line git marks as changed). revealPending waits until the marks of the opened file are computed.
+let revealLine = -1
+let revealPending = false
+async function revealNow($: any, line = revealLine): Promise<void> {
+  revealLine = -1
+  if (line < 0) return
+  const total = known.split('\n').length
+  const maxTop = Math.max(0, total - editRows)
+  const want = Math.max(0, Math.min(maxTop, line - Math.floor(editRows / 3)))
+  editTop = want
+  revealRowOut = line
+  revealIdOut = Math.max(revealIdOut + 1, Date.now())
+  await update($, tick, n => n + 1)
+}
+// What the editor is told: put the cursor on this row and the window around it, once per id.
+let revealRowOut = 0
+let revealIdOut = 0
 
 // The status line pinned under the prompt, drawn like the one in settings.json (same data, same colours).
 let ramAt = 0
@@ -471,6 +606,7 @@ const DIM = '#808080'
 const TRACK = '#444444'
 const WHITE = '#eeeeee'
 const HOT = '#ff5f5f'
+const WARN = '#e5c07b'
 const GREEN = '#5fd787'
 type Seg = { t: string; c?: string; b?: boolean; k?: 'name' | 'branch' }
 let statusSegs: Seg[] = []
@@ -479,7 +615,7 @@ const sep = (): Seg[] => [{ t: '  ' }, { t: '┃', c: TRACK }, { t: '  ' }]
 const sbar = (v: number | null | undefined, w = 10): Seg[] => {
   if (v == null) return [{ t: '▱'.repeat(w), c: TRACK }, { t: ' ' }, { t: '–', c: DIM }]
   const f = Math.max(0, Math.min(w, Math.round((v / 100) * w)))
-  const hot = v >= 85 ? HOT : ORANGE
+  const hot = v >= 90 ? HOT : v >= 80 ? WARN : ORANGE
 
   return [{ t: '▰'.repeat(f), c: hot }, { t: '▱'.repeat(w - f), c: TRACK }, { t: ' ' }, { t: Math.round(v) + '%', c: hot }]
 }
@@ -865,6 +1001,20 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // AskUserQuestion while the person is away from this tab: the same questions as popup steps.
+  // Backing out (or any failure) hands the call on, so the terminal dialog opens as usual.
+  on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
+    try {
+      const qs = (e as any).questions
+      if (cfg.popups && Array.isArray(qs) && qs.length && (await awayFromTab($))) {
+        const answers = await askInPopup($, qs)
+        if (answers) return { result: { questions: qs, answers } } as any
+      }
+    } catch {}
+
+    return next(e)
+  })
+
   on('turn.complete', async ($, e, next) => {
     try {
       statusAt = 0
@@ -872,6 +1022,13 @@ export const register: Register = on => {
       await refresh($, false, true)
     } catch {}
     busy = false
+
+    // A macOS dialog when Claude finishes, only if this terminal tab is not the one in front.
+    // OK brings that exact Terminal window and tab to the front. Never allowed to hold up the event.
+    try {
+      const ev = e as any
+      if (!ev.agentId && ev.reason === 'answer') void notifyDone($, ev)
+    } catch {}
 
     return next(e)
   })
@@ -970,7 +1127,7 @@ export const register: Register = on => {
       const onBar = e.pointer.row === barRow
       if (onBar && known) {
         const longest = known.split('\n').reduce((n, l) => Math.max(n, l.length), 0)
-        const sideways = Math.max(0, Math.min(Math.max(0, longest - editCols2 + 1), editLeft + e.by * WHEEL_STEP))
+        const sideways = Math.max(0, Math.min(Math.max(0, longest - editCols2 + 1), editLeft + Math.sign(e.by) * WHEEL_STEP))
         if (sideways !== editLeft) {
           editLeft = sideways
           await update($, hwheel, n => n + 1)
@@ -979,7 +1136,7 @@ export const register: Register = on => {
         return {}
       }
       const max = Math.max(0, known.split('\n').length - editRows)
-      const next = Math.max(0, Math.min(max, editTop + e.by * WHEEL_STEP))
+      const next = Math.max(0, Math.min(max, editTop + Math.sign(e.by) * WHEEL_STEP))
       if (next !== editTop) {
         editTop = next
         await update($, wheel, n => n + 1)
@@ -1160,8 +1317,15 @@ export const register: Register = on => {
     for (const p of gitDel) changes.push({ path: p, name: p.slice(p.lastIndexOf('/') + 1), kind: 'D' })
     changes.sort((a, b) => a.path.localeCompare(b.path))
     const shownChanges = (q ? changes.filter(c => c.name.toLowerCase().includes(q)) : changes).slice(0, 500)
-    const cheight = changes.length ? Math.min(changes.length, Math.max(3, Math.floor((H - 6) / 3))) : 0
-    const theight = Math.max(1, height - 1 - (cheight ? cheight + 1 : 0))
+    // The tree takes only the rows it has; the changed files get what is left (a third at least), so the list
+    // starts right under the tree and its scroll bar and wheel area sit exactly on it.
+    const want = changes.length ? (q ? Math.max(1, shownChanges.length) : changes.length) : 0
+    const space = height - 1
+    const treeNeed = Math.max(1, rows.length)
+    const third = Math.max(3, Math.floor((H - 6) / 3))
+    const cheight0 = want ? Math.min(want, Math.max(third, space - 1 - treeNeed)) : 0
+    const theight = Math.max(1, Math.min(treeNeed, space - (cheight0 ? cheight0 + 1 : 0)))
+    const cheight = want ? Math.max(1, Math.min(want, space - theight - 1)) : 0
     chgHeight = cheight
     chgCount = shownChanges.length
     chgFrom = cheight ? HEAD + 1 + theight : -1
@@ -1221,7 +1385,7 @@ export const register: Register = on => {
             <Client
               key="editor"
               module="./editor.tsx"
-              props={{ path: active, text: shownText, wheel: wheelTotal, scrollTo: editTop, hwheel: sidewaysTotal, scrollLeft: editLeft, marks: shownMarks, base: shownBase, paste: shownPaste, readOnly: isBig, rev: revision }}
+              props={{ path: active, text: shownText, wheel: wheelTotal, scrollTo: editTop, revealId: revealIdOut, revealRow: revealRowOut, hwheel: sidewaysTotal, scrollLeft: editLeft, marks: shownMarks, base: shownBase, paste: shownPaste, readOnly: isBig, rev: revision }}
               width={editW}
               height={height}
             />
@@ -1317,6 +1481,7 @@ export const register: Register = on => {
               </Button>
             )
           })}
+          {Array.from({ length: Math.max(0, theight - shown.length) }, (_, i) => <Text key={'tp' + i}> </Text>)}
           {cheight ? (
             <Text>
               <Text bold color={ORANGE}>{'IZMJENE'}</Text>
@@ -1349,7 +1514,7 @@ export const register: Register = on => {
 
             // A deleted file has nothing to open: shown dim, not pressable.
             return c.kind === 'D' ? <Box key={'c' + c.path}>{body}</Box> : (
-              <Button key={'c' + c.path} plain onPress={() => { if (q) reveal(c.path, true); return openFile($, c.path) }}>{body}</Button>
+              <Button key={'c' + c.path} plain onPress={() => { if (q) reveal(c.path, true); return openFile($, c.path, true) }}>{body}</Button>
             )
           }) : null}
         </Box>
